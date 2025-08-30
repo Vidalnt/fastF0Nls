@@ -11,33 +11,68 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
+      
     - name: Setup vcpkg
       run: |
         git clone https://github.com/Microsoft/vcpkg.git
         .\vcpkg\bootstrap-vcpkg.bat
-        echo "VCPKG_ROOT=%CD%\vcpkg" >> $env:GITHUB_ENV
+        echo "VCPKG_ROOT=$env:GITHUB_WORKSPACE\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
       shell: powershell
+      
     - name: Install FFTW3
-      run: .\vcpkg\vcpkg.exe install fftw3[core,threads,avx,avx2,openmp,sse,sse2]:x64-windows --recurse
+      run: |
+        $env:VCPKG_ROOT\vcpkg.exe install fftw3:x64-windows --recurse
       shell: powershell
+      
     - name: Configure CMake
       run: |
         cmake -B build -S cpp `
-          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake `
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} `
-          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>"
+          -DCMAKE_BUILD_TYPE=Release `
+          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
       shell: powershell
+      
     - name: Build
-      run: cmake --build build --config Release
+      run: cmake --build build --config Release --verbose
       shell: powershell
-    - name: Create lib directory
-      run: New-Item -ItemType Directory -Force -Path cpp\lib
+      
+    - name: Create lib directory structure
+      run: |
+        if (!(Test-Path "cpp\lib")) {
+          New-Item -ItemType Directory -Force -Path "cpp\lib"
+        }
       shell: powershell
+      
     - name: Copy DLL to lib directory
-      run: Copy-Item build\Release\single_pitch.dll cpp\lib\single_pitch.dll
+      run: |
+        if (Test-Path "build\Release\single_pitch.dll") {
+          Copy-Item "build\Release\single_pitch.dll" "cpp\lib\single_pitch.dll"
+          Write-Host "DLL copied successfully"
+        } else {
+          Write-Host "Searching for DLL in build directory..."
+          Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
+          exit 1
+        }
       shell: powershell
+      
+    - name: Verify DLL creation
+      run: |
+        if (Test-Path "cpp\lib\single_pitch.dll") {
+          $fileInfo = Get-Item "cpp\lib\single_pitch.dll"
+          Write-Host "DLL created successfully:"
+          Write-Host "  Path: $($fileInfo.FullName)"
+          Write-Host "  Size: $($fileInfo.Length) bytes"
+          Write-Host "  Created: $($fileInfo.CreationTime)"
+        } else {
+          Write-Host "ERROR: DLL not found in cpp\lib directory"
+          exit 1
+        }
+      shell: powershell
+      
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: windows-dll
         path: cpp/lib/single_pitch.dll
+        retention-days: 30
