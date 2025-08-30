@@ -1,0 +1,41 @@
+name: Build Windows DLL
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+      
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    - name: Setup vcpkg
+      uses: lukka/run-vcpkg@v12
+      with:
+        vcpkgTriplet: ${{ env.VCPKG_DEFAULT_TRIPLET }}
+    - name: Install FFTW3
+      run: vcpkg install fftw3[core,threads,avx,avx2,openmp,sse,sse2] --recurse
+      shell: cmd
+    - name: Configure CMake
+      run: |
+        cmake -B build -S cpp `
+          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake `
+          -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} `
+          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      shell: cmd
+    - name: Build
+      run: cmake --build build --config Release
+      shell: cmd
+    - name: Create lib directory
+      run: mkdir cpp\lib
+      shell: cmd
+    - name: Copy DLL to lib directory
+      run: copy build\Release\single_pitch.dll cpp\lib\single_pitch.dll
+      shell: cmd
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: windows-dll
+        path: cpp/lib/single_pitch.dll
