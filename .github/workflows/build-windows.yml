@@ -26,41 +26,23 @@ jobs:
       
     - name: Patch code for Windows compatibility
       run: |
-        # Leer el archivo original
-        $filePath = "cpp\src\single_pitch.cpp"
-        $content = Get-Content $filePath -Raw
-        
-        # Agregar includes y definiciones necesarias al inicio
-        $patchHeader = @"
+        # Crear un parche para compatibility con MSVC
+        $patchContent = @"
         #ifdef _MSC_VER
         #ifndef M_PI
         #define M_PI 3.14159265358979323846
         #endif
         #define or ||
         #define and &&
-        #include <cmath>
-        #include <algorithm>
-        using std::min;
-        using std::max;
         #endif
         "@
         
-        # Aplicar el parche
-        $patchedContent = $patchHeader + $content
-        Set-Content $filePath -Value $patchedContent -Encoding UTF8
+        # Agregar el parche al inicio de single_pitch.cpp
+        $originalContent = Get-Content "cpp\src\single_pitch.cpp" -Raw
+        $patchedContent = $patchContent + "`n" + $originalContent
+        Set-Content "cpp\src\single_pitch.cpp" -Value $patchedContent
         
-        # También parchear otros archivos si es necesario
-        $filesToPatch = @("cpp\src\th.cpp", "cpp\src\tools.cpp", "cpp\src\vector.cpp")
-        foreach ($file in $filesToPatch) {
-          if (Test-Path $file) {
-            $fileContent = Get-Content $file -Raw
-            $patchedFileContent = $patchHeader + $fileContent
-            Set-Content $file -Value $patchedFileContent -Encoding UTF8
-            Write-Host "Patched: $file"
-          }
-        }
-        
-        Write-Host "Applied Windows compatibility patches"
+        Write-Host "Applied Windows compatibility patch to single_pitch.cpp"
       shell: powershell
       
     - name: Verify vcpkg installation
@@ -76,8 +58,7 @@ jobs:
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} `
           -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_VERBOSE_MAKEFILE=ON `
-          -DCMAKE_CXX_FLAGS="/D_USE_MATH_DEFINES /DNOMINMAX"
+          -DCMAKE_VERBOSE_MAKEFILE=ON
       shell: powershell
       
     - name: Build project
@@ -134,7 +115,7 @@ jobs:
         }
       shell: powershell
       
-    - name: Verify final DLL
+    - name: Verify final DLL (safe dumpbin lookup)
       run: |
         if (Test-Path "cpp\lib\single_pitch.dll") {
           $fileInfo = Get-Item "cpp\lib\single_pitch.dll"
@@ -142,22 +123,63 @@ jobs:
           Write-Host "  Path: $($fileInfo.FullName)"
           Write-Host "  Size: $($fileInfo.Length) bytes"
           Write-Host "  Modified: $($fileInfo.LastWriteTime)"
-          
-          # Check DLL dependencies using full path to dumpbin
-          Write-Host "Checking DLL dependencies:"
-          $dumpbinPath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\dumpbin.exe"
-          if (Test-Path $dumpbinPath) {
-            & $dumpbinPath /dependents "cpp\lib\single_pitch.dll"
+
+          # Intent: try to locate dumpbin.exe robustly without failing the job if not found
+          $dumpbin = $null
+
+          # 1) Try Get-Command (if dumpbin is on PATH)
+          $cmd = Get-Command dumpbin -ErrorAction SilentlyContinue
+          if ($cmd) {
+            $dumpbin = $cmd.Source
+          }
+
+          # 2) Use vswhere to find Visual Studio installation and locate dumpbin
+          if (-not $dumpbin) {
+            $vswherePath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            if (Test-Path $vswherePath) {
+              try {
+                $vsInstall = & $vswherePath -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
+                if ($vsInstall) {
+                  $msvcRoot = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Directory -ErrorAction SilentlyContinue | Sort-Object Name -Descending | Select-Object -First 1
+                  if ($msvcRoot) {
+                    $candidate = Join-Path $msvcRoot.FullName "bin\Hostx64\x64\dumpbin.exe"
+                    if (Test-Path $candidate) { $dumpbin = $candidate }
+                  }
+                }
+              } catch {
+                Write-Host "vswhere failed or returned nothing: $_"
+              }
+            }
+          }
+
+          # 3) Check common Visual Studio locations (wildcard search)
+          if (-not $dumpbin) {
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe",
+              "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\*\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe"
+            )
+            foreach ($pat in $candidates) {
+              $found = Get-ChildItem -Path $pat -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($found) { $dumpbin = $found.FullName; break }
+            }
+          }
+
+          if ($dumpbin) {
+            Write-Host "Using dumpbin at: $dumpbin"
+            try {
+              & $dumpbin /dependents "cpp\lib\single_pitch.dll" 2>&1 | ForEach-Object { Write-Host $_ }
+            } catch {
+              Write-Host "Failed to run dumpbin, but build will not be marked failed. Error: $_"
+            }
           } else {
-            Write-Host "dumpbin not found at expected path, skipping dependency check"
-            Write-Host "DLL file exists and has reasonable size, build appears successful"
+            Write-Host "dumpbin not found on runner. Skipping dependency dump. (This is informational only.)"
           }
         } else {
           Write-Host "❌ ERROR: Final DLL not found"
           exit 1
         }
       shell: powershell
-      
+
     - name: Upload Windows DLL artifact
       uses: actions/upload-artifact@v4
       with:
