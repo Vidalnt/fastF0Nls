@@ -12,28 +12,30 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
     - name: Setup vcpkg
-      uses: lukka/run-vcpkg@v11
-      with:
-        vcpkgTriplet: ${{ env.VCPKG_DEFAULT_TRIPLET }}
+      run: |
+        git clone https://github.com/Microsoft/vcpkg.git
+        .\vcpkg\bootstrap-vcpkg.bat
+        echo "VCPKG_ROOT=%CD%\vcpkg" >> $env:GITHUB_ENV
+      shell: powershell
     - name: Install FFTW3
-      run: vcpkg install fftw3[core,threads,avx,avx2,openmp,sse,sse2] --recurse
-      shell: cmd
+      run: .\vcpkg\vcpkg.exe install fftw3[core,threads,avx,avx2,openmp,sse,sse2]:x64-windows --recurse
+      shell: powershell
     - name: Configure CMake
       run: |
         cmake -B build -S cpp `
-          -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake `
+          -DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake `
           -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} `
           -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>"
-      shell: cmd
+      shell: powershell
     - name: Build
       run: cmake --build build --config Release
-      shell: cmd
+      shell: powershell
     - name: Create lib directory
-      run: mkdir cpp\lib
-      shell: cmd
+      run: New-Item -ItemType Directory -Force -Path cpp\lib
+      shell: powershell
     - name: Copy DLL to lib directory
-      run: copy build\Release\single_pitch.dll cpp\lib\single_pitch.dll
-      shell: cmd
+      run: Copy-Item build\Release\single_pitch.dll cpp\lib\single_pitch.dll
+      shell: powershell
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
