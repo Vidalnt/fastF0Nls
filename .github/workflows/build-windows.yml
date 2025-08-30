@@ -21,7 +21,7 @@ jobs:
       
     - name: Install FFTW3
       run: |
-        $env:VCPKG_ROOT\vcpkg.exe install fftw3:x64-windows --recurse
+        & "$env:VCPKG_ROOT\vcpkg.exe" install fftw3:x64-windows --recurse
       shell: powershell
       
     - name: Configure CMake
