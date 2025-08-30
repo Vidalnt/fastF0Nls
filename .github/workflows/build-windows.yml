@@ -12,7 +12,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
     - name: Setup vcpkg
-      uses: lukka/run-vcpkg@v12
+      uses: lukka/run-vcpkg@v11
       with:
         vcpkgTriplet: ${{ env.VCPKG_DEFAULT_TRIPLET }}
     - name: Install FFTW3
@@ -35,7 +35,7 @@ jobs:
       run: copy build\Release\single_pitch.dll cpp\lib\single_pitch.dll
       shell: cmd
     - name: Upload artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-dll
         path: cpp/lib/single_pitch.dll
