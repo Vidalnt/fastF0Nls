@@ -1,12 +1,6 @@
 name: Build Windows DLL
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - 'cpp/**'
-  pull_request:
-    paths:
-      - 'cpp/**'
 
 jobs:
   build-windows:
