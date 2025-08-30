@@ -24,55 +24,119 @@ jobs:
         & "$env:VCPKG_ROOT\vcpkg.exe" install fftw3:x64-windows --recurse
       shell: powershell
       
+    - name: Patch code for Windows compatibility
+      run: |
+        # Crear un parche para compatibility con MSVC
+        $patchContent = @"
+        #ifdef _MSC_VER
+        #ifndef M_PI
+        #define M_PI 3.14159265358979323846
+        #endif
+        #define or ||
+        #define and &&
+        #endif
+        "@
+        
+        # Agregar el parche al inicio de single_pitch.cpp
+        $originalContent = Get-Content "cpp\src\single_pitch.cpp" -Raw
+        $patchedContent = $patchContent + "`n" + $originalContent
+        Set-Content "cpp\src\single_pitch.cpp" -Value $patchedContent
+        
+        Write-Host "Applied Windows compatibility patch to single_pitch.cpp"
+      shell: powershell
+      
+    - name: Verify vcpkg installation
+      run: |
+        Write-Host "VCPKG_ROOT: $env:VCPKG_ROOT"
+        Write-Host "FFTW3 installation directory:"
+        Get-ChildItem "$env:VCPKG_ROOT\installed\x64-windows" -Recurse -Filter "*fftw*" | Select-Object FullName
+      shell: powershell
+      
     - name: Configure CMake
       run: |
         cmake -B build -S cpp `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} `
           -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
+          -DCMAKE_VERBOSE_MAKEFILE=ON
       shell: powershell
       
-    - name: Build
-      run: cmake --build build --config Release --verbose
-      shell: powershell
-      
-    - name: Create lib directory structure
+    - name: Build project
       run: |
-        if (!(Test-Path "cpp\lib")) {
-          New-Item -ItemType Directory -Force -Path "cpp\lib"
+        cmake --build build --config Release --verbose
+      shell: powershell
+      
+    - name: List build output files
+      run: |
+        Write-Host "Contents of build directory:"
+        Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object { 
+          Write-Host "Found DLL: $($_.FullName)"
+        }
+        Write-Host "Contents of build/Release directory:"
+        if (Test-Path "build\Release") {
+          Get-ChildItem "build\Release" | ForEach-Object { Write-Host $_.Name }
+        } else {
+          Write-Host "Release directory does not exist"
         }
       shell: powershell
       
-    - name: Copy DLL to lib directory
+    - name: Create lib directory and copy DLL
       run: |
-        if (Test-Path "build\Release\single_pitch.dll") {
-          Copy-Item "build\Release\single_pitch.dll" "cpp\lib\single_pitch.dll"
-          Write-Host "DLL copied successfully"
-        } else {
-          Write-Host "Searching for DLL in build directory..."
-          Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object { Write-Host $_.FullName }
+        # Create lib directory if it doesn't exist
+        if (!(Test-Path "cpp\lib")) {
+          New-Item -ItemType Directory -Force -Path "cpp\lib"
+          Write-Host "Created cpp\lib directory"
+        }
+        
+        # Find and copy the DLL
+        $dllFound = $false
+        $possiblePaths = @(
+          "build\Release\single_pitch.dll",
+          "build\single_pitch.dll",
+          "build\src\Release\single_pitch.dll"
+        )
+        
+        foreach ($path in $possiblePaths) {
+          if (Test-Path $path) {
+            Copy-Item $path "cpp\lib\single_pitch.dll"
+            Write-Host "DLL copied from: $path"
+            $dllFound = $true
+            break
+          }
+        }
+        
+        if (!$dllFound) {
+          Write-Host "ERROR: Could not find single_pitch.dll in expected locations"
+          Write-Host "Searching entire build directory for DLL files:"
+          Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object { 
+            Write-Host "  $($_.FullName)"
+          }
           exit 1
         }
       shell: powershell
       
-    - name: Verify DLL creation
+    - name: Verify final DLL
       run: |
         if (Test-Path "cpp\lib\single_pitch.dll") {
           $fileInfo = Get-Item "cpp\lib\single_pitch.dll"
-          Write-Host "DLL created successfully:"
+          Write-Host "✅ DLL created successfully:"
           Write-Host "  Path: $($fileInfo.FullName)"
           Write-Host "  Size: $($fileInfo.Length) bytes"
-          Write-Host "  Created: $($fileInfo.CreationTime)"
+          Write-Host "  Modified: $($fileInfo.LastWriteTime)"
+          
+          # Check DLL dependencies
+          Write-Host "Checking DLL dependencies:"
+          dumpbin /dependents "cpp\lib\single_pitch.dll"
         } else {
-          Write-Host "ERROR: DLL not found in cpp\lib directory"
+          Write-Host "❌ ERROR: Final DLL not found"
           exit 1
         }
       shell: powershell
       
-    - name: Upload artifact
+    - name: Upload Windows DLL artifact
       uses: actions/upload-artifact@v4
       with:
-        name: windows-dll
+        name: fastF0Nls-windows-dll
         path: cpp/lib/single_pitch.dll
         retention-days: 30
+        if-no-files-found: error
