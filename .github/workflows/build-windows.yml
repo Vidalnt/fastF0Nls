@@ -48,52 +48,54 @@ jobs:
       id: fftw-install
 
     - name: 🛠️ Apply Windows compatibility patches
+      id: apply-patches
       run: |
-        $patches = @(
-          @{
-            file = "cpp\src\single_pitch.cpp"
-            patches = @(
-              "Add Windows-specific includes and defines",
-              "#ifdef _MSC_VER`n#ifndef M_PI`n#define M_PI 3.14159265358979323846`n#endif`n#define NOMINMAX`n#include <cmath>`n#include <algorithm>`nusing std::min;`nusing std::max;`n#endif`n"
-            )
-          },
-          @{
-            file = "cpp\src\th.cpp"
-            patches = @(
-              "Fix Windows-specific math issues",
-              "#ifdef _MSC_VER`n#include <cmath>`n#endif`n"
-            )
-          }
+        # Definir el encabezado del parche una sola vez
+        $patchHeader = @"
+#ifdef _MSC_VER
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+#define or ||
+#define and &&
+#include <cmath>
+#include <algorithm>
+using std::min;
+using std::max;
+#endif
+
+"@
+
+        # Lista de todos los archivos que necesitan el parche
+        $filesToPatch = @(
+          "cpp\src\single_pitch.cpp",
+          "cpp\src\th.cpp",
+          "cpp\src\tools.cpp",
+          "cpp\src\vector.cpp"
         )
-        
-        foreach ($patchGroup in $patches) {
-          $filePath = $patchGroup.file
-          if (-not (Test-Path $filePath)) {
-            Write-Warning "File not found: $filePath - skipping patches"
-            continue
-          }
-          
-          $content = Get-Content $filePath -Raw
-          $originalHash = (Get-FileHash $filePath).Hash
-          
-          foreach ($patch in $patchGroup.patches) {
-            # Verificar si el parche ya está aplicado
-            if ($content -notmatch [regex]::Escape($patch)) {
-              $content = $patch + $content
-              Write-Host "Applied patch to $filePath: $($patch.Substring(0, [Math]::Min(50, $patch.Length)))..."
+
+        # Iterar sobre cada archivo y aplicar el parche si es necesario
+        foreach ($file in $filesToPatch) {
+          if (Test-Path $file) {
+            $content = Get-Content $file -Raw
+            
+            # Prevenir la aplicación del parche si ya existe una marca (opcional pero recomendado)
+            if ($content.StartsWith("#ifdef _MSC_VER")) {
+                Write-Host "Patch likely already applied to $file, skipping."
+                continue
             }
-            else {
-              Write-Host "Patch already applied to $filePath - skipping"
-            }
+
+            # Aplicar el parche al inicio del contenido
+            $patchedContent = $patchHeader + $content
+            Set-Content -Path $file -Value $patchedContent -Encoding UTF8
+            Write-Host "Patched for Windows compatibility: $file"
           }
-          
-          # Solo guardar si hubo cambios
-          $newHash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($content)))).Hash
-          if ($originalHash -ne $newHash) {
-            [System.IO.File]::WriteAllText($filePath, $content, [System.Text.Encoding]::UTF8)
-            Write-Host "Updated $filePath with Windows compatibility patches"
+          else {
+            Write-Warning "File not found, skipping patch: $file"
           }
         }
+        
+        Write-Host "Finished applying Windows compatibility patches."
       shell: powershell
 
     - name: 🔍 Configure CMake
