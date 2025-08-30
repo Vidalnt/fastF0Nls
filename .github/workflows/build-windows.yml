@@ -1,142 +1,193 @@
 name: Build Windows DLL
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'cpp/**'
+  pull_request:
+    paths:
+      - 'cpp/**'
 
 jobs:
   build-windows:
     runs-on: windows-latest
     env:
+      BUILD_TYPE: Release
       VCPKG_DEFAULT_TRIPLET: x64-windows
       
     steps:
-    - name: Checkout repository
+    - name: 📦 Checkout repository
       uses: actions/checkout@v4
-      
-    - name: Setup vcpkg
+
+    - name: 🧰 Setup build environment
       run: |
-        git clone https://github.com/Microsoft/vcpkg.git
+        # Crear directorio para builds
+        New-Item -Path "build" -ItemType Directory -Force | Out-Null
+        
+        # Configurar variables de entorno
+        echo "VCPKG_ROOT=${{ github.workspace }}\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
+        echo "FFTW_INCLUDE_DIR=${{ github.workspace }}\vcpkg\installed\x64-windows\include" | Out-File -FilePath $env:GITHUB_ENV -Append
+        echo "FFTW_LIBRARY=${{ github.workspace }}\vcpkg\installed\x64-windows\lib\fftw3.lib" | Out-File -FilePath $env:GITHUB_ENV -Append
+      shell: powershell
+
+    - name: 📦 Install vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg.git
         .\vcpkg\bootstrap-vcpkg.bat
-        echo "VCPKG_ROOT=$env:GITHUB_WORKSPACE\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
+        .\vcpkg\vcpkg integrate install
       shell: powershell
-      
-    - name: Install FFTW3
+
+    - name: 🔧 Install FFTW3 dependencies
       run: |
-        & "$env:VCPKG_ROOT\vcpkg.exe" install fftw3:x64-windows --recurse
-      shell: powershell
-      
-    - name: Patch code for Windows compatibility
-      run: |
-        # Crear un parche para compatibility con MSVC
-        $patchContent = @"
-        #ifdef _MSC_VER
-        #ifndef M_PI
-        #define M_PI 3.14159265358979323846
-        #endif
-        #define or ||
-        #define and &&
-        #endif
-        "@
-        
-        # Agregar el parche al inicio de single_pitch.cpp
-        $originalContent = Get-Content "cpp\src\single_pitch.cpp" -Raw
-        $patchedContent = $patchContent + "`n" + $originalContent
-        Set-Content "cpp\src\single_pitch.cpp" -Value $patchedContent
-        
-        Write-Host "Applied Windows compatibility patch to single_pitch.cpp"
-      shell: powershell
-      
-    - name: Verify vcpkg installation
-      run: |
-        Write-Host "VCPKG_ROOT: $env:VCPKG_ROOT"
-        Write-Host "FFTW3 installation directory:"
-        Get-ChildItem "$env:VCPKG_ROOT\installed\x64-windows" -Recurse -Filter "*fftw*" | Select-Object FullName
-      shell: powershell
-      
-    - name: Configure CMake
-      run: |
-        cmake -B build -S cpp `
-          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-          -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} `
-          -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_VERBOSE_MAKEFILE=ON
-      shell: powershell
-      
-    - name: Build project
-      run: |
-        cmake --build build --config Release --verbose
-      shell: powershell
-      
-    - name: List build output files
-      run: |
-        Write-Host "Contents of build directory:"
-        Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object { 
-          Write-Host "Found DLL: $($_.FullName)"
-        }
-        Write-Host "Contents of build/Release directory:"
-        if (Test-Path "build\Release") {
-          Get-ChildItem "build\Release" | ForEach-Object { Write-Host $_.Name }
-        } else {
-          Write-Host "Release directory does not exist"
+        .\vcpkg\vcpkg install fftw3:x64-windows --recurse
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Failed to install FFTW3 dependencies"
+          exit 1
         }
       shell: powershell
-      
-    - name: Create lib directory and copy DLL
+      id: fftw-install
+
+    - name: 🛠️ Apply Windows compatibility patches
       run: |
-        # Create lib directory if it doesn't exist
-        if (!(Test-Path "cpp\lib")) {
-          New-Item -ItemType Directory -Force -Path "cpp\lib"
-          Write-Host "Created cpp\lib directory"
-        }
-        
-        # Find and copy the DLL
-        $dllFound = $false
-        $possiblePaths = @(
-          "build\Release\single_pitch.dll",
-          "build\single_pitch.dll",
-          "build\src\Release\single_pitch.dll"
+        $patches = @(
+          @{
+            file = "cpp\src\single_pitch.cpp"
+            patches = @(
+              "Add Windows-specific includes and defines",
+              "#ifdef _MSC_VER`n#ifndef M_PI`n#define M_PI 3.14159265358979323846`n#endif`n#define NOMINMAX`n#include <cmath>`n#include <algorithm>`nusing std::min;`nusing std::max;`n#endif`n"
+            )
+          },
+          @{
+            file = "cpp\src\th.cpp"
+            patches = @(
+              "Fix Windows-specific math issues",
+              "#ifdef _MSC_VER`n#include <cmath>`n#endif`n"
+            )
+          }
         )
         
-        foreach ($path in $possiblePaths) {
-          if (Test-Path $path) {
-            Copy-Item $path "cpp\lib\single_pitch.dll"
-            Write-Host "DLL copied from: $path"
-            $dllFound = $true
-            break
+        foreach ($patchGroup in $patches) {
+          $filePath = $patchGroup.file
+          if (-not (Test-Path $filePath)) {
+            Write-Warning "File not found: $filePath - skipping patches"
+            continue
+          }
+          
+          $content = Get-Content $filePath -Raw
+          $originalHash = (Get-FileHash $filePath).Hash
+          
+          foreach ($patch in $patchGroup.patches) {
+            # Verificar si el parche ya está aplicado
+            if ($content -notmatch [regex]::Escape($patch)) {
+              $content = $patch + $content
+              Write-Host "Applied patch to $filePath: $($patch.Substring(0, [Math]::Min(50, $patch.Length)))..."
+            }
+            else {
+              Write-Host "Patch already applied to $filePath - skipping"
+            }
+          }
+          
+          # Solo guardar si hubo cambios
+          $newHash = (Get-FileHash -InputStream ([System.IO.MemoryStream]::new([System.Text.Encoding]::UTF8.GetBytes($content)))).Hash
+          if ($originalHash -ne $newHash) {
+            [System.IO.File]::WriteAllText($filePath, $content, [System.Text.Encoding]::UTF8)
+            Write-Host "Updated $filePath with Windows compatibility patches"
+          }
+        }
+      shell: powershell
+
+    - name: 🔍 Configure CMake
+      run: |
+        cmake -S cpp -B build `
+          -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}\scripts\buildsystems\vcpkg.cmake" `
+          -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} `
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+          -DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=TRUE `
+          -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<1:$<STREQUAL:${CMAKE_BUILD_TYPE},Debug>:Debug>" `
+          -DCMAKE_CXX_FLAGS="/D_USE_MATH_DEFINES /DNOMINMAX /W3 /EHsc" `
+          -G "Visual Studio 17 2022" -A x64
+      shell: powershell
+      id: cmake-config
+
+    - name: ⚙️ Build project
+      run: |
+        cmake --build build --config ${{ env.BUILD_TYPE }} --target single_pitch --verbose
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "CMake build failed"
+          exit 1
+        }
+      shell: powershell
+      id: build
+
+    - name: 📁 Verify and copy DLL
+      run: |
+        $dllPath = "build\${{ env.BUILD_TYPE }}\single_pitch.dll"
+        if (-not (Test-Path $dllPath)) {
+          # Intentar encontrar el DLL en otros lugares comunes
+          $possiblePaths = @(
+            "build\src\${{ env.BUILD_TYPE }}\single_pitch.dll",
+            "build\single_pitch.dll",
+            "build\src\single_pitch.dll"
+          )
+          
+          foreach ($path in $possiblePaths) {
+            if (Test-Path $path) {
+              $dllPath = $path
+              break
+            }
           }
         }
         
-        if (!$dllFound) {
-          Write-Host "ERROR: Could not find single_pitch.dll in expected locations"
-          Write-Host "Searching entire build directory for DLL files:"
-          Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object { 
-            Write-Host "  $($_.FullName)"
+        if (-not (Test-Path $dllPath)) {
+          Write-Error "Failed to locate single_pitch.dll after build"
+          Get-ChildItem -Path build -Recurse -Include *.dll | ForEach-Object {
+            Write-Host "Found DLL: $($_.FullName)"
           }
           exit 1
         }
-      shell: powershell
-      
-    - name: Verify final DLL
-      run: |
-        if (Test-Path "cpp\lib\single_pitch.dll") {
-          $fileInfo = Get-Item "cpp\lib\single_pitch.dll"
-          Write-Host "✅ DLL created successfully:"
-          Write-Host "  Path: $($fileInfo.FullName)"
-          Write-Host "  Size: $($fileInfo.Length) bytes"
-          Write-Host "  Modified: $($fileInfo.LastWriteTime)"
-          
-          # Check DLL dependencies
-          Write-Host "Checking DLL dependencies:"
-          dumpbin /dependents "cpp\lib\single_pitch.dll"
-        } else {
-          Write-Host "❌ ERROR: Final DLL not found"
-          exit 1
+        
+        # Crear directorio lib si no existe
+        $libDir = "cpp\lib"
+        if (-not (Test-Path $libDir)) {
+          New-Item -ItemType Directory -Path $libDir | Out-Null
+        }
+        
+        # Copiar el DLL
+        Copy-Item -Path $dllPath -Destination "${libDir}\single_pitch.dll" -Force
+        Write-Host "✅ DLL successfully copied to ${libDir}\single_pitch.dll"
+        
+        # Verificar tamaño del DLL
+        $dllSize = (Get-Item "${libDir}\single_pitch.dll").Length
+        if ($dllSize -lt 100KB) {
+          Write-Warning "DLL size is suspiciously small ($($dllSize/1KB) KB) - might be incomplete"
+        }
+        else {
+          Write-Host "DLL size: $($dllSize/1KB) KB"
         }
       shell: powershell
-      
-    - name: Upload Windows DLL artifact
+      id: verify-dll
+
+    - name: 🔎 Dependency check
+      run: |
+        $dumpbinPath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe"
+        $resolvedPath = Resolve-Path $dumpbinPath -ErrorAction SilentlyContinue
+        
+        if ($resolvedPath) {
+          Write-Host "Using dumpbin from: $resolvedPath"
+          & $resolvedPath /dependents "cpp\lib\single_pitch.dll"
+        }
+        else {
+          Write-Host "⚠️ dumpbin not found - skipping dependency check"
+          Write-Host "DLL file exists, build likely successful"
+        }
+      shell: powershell
+      if: success()
+
+    - name: 📤 Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: fastF0Nls-windows-dll
         path: cpp/lib/single_pitch.dll
         retention-days: 30
         if-no-files-found: error
+      if: success()
