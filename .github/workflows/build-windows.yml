@@ -48,28 +48,29 @@ jobs:
     - name: Verify vcpkg installation
       run: |
         Write-Host "VCPKG_ROOT: $env:VCPKG_ROOT"
-        Write-Host "FFTW3 installation directory:"
+        Write-Host "FFTW3 installation directory (searching for fftw dlls):"
         Get-ChildItem "$env:VCPKG_ROOT\installed\x64-windows" -Recurse -Filter "*fftw*" | Select-Object FullName
       shell: powershell
-      
+
     - name: Configure CMake
       run: |
         cmake -B build -S cpp `
           -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
           -DVCPKG_TARGET_TRIPLET=${{ env.VCPKG_DEFAULT_TRIPLET }} `
           -DCMAKE_BUILD_TYPE=Release `
-          -DCMAKE_VERBOSE_MAKEFILE=ON
+          -DCMAKE_VERBOSE_MAKEFILE=ON `
+          -DCMAKE_CXX_FLAGS="/D_USE_MATH_DEFINES /DNOMINMAX"
       shell: powershell
-      
+
     - name: Build project
       run: |
         cmake --build build --config Release --verbose
       shell: powershell
-      
+
     - name: List build output files
       run: |
-        Write-Host "Contents of build directory:"
-        Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object { 
+        Write-Host "Contents of build directory (DLLs):"
+        Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object {
           Write-Host "Found DLL: $($_.FullName)"
         }
         Write-Host "Contents of build/Release directory:"
@@ -79,42 +80,42 @@ jobs:
           Write-Host "Release directory does not exist"
         }
       shell: powershell
-      
+
     - name: Create lib directory and copy DLL
       run: |
-        # Create lib directory if it doesn't exist
+        # Create cpp\lib directory if it doesn't exist
         if (!(Test-Path "cpp\lib")) {
           New-Item -ItemType Directory -Force -Path "cpp\lib"
           Write-Host "Created cpp\lib directory"
         }
-        
-        # Find and copy the DLL
+
+        # Find and copy the single_pitch.dll
         $dllFound = $false
         $possiblePaths = @(
           "build\Release\single_pitch.dll",
           "build\single_pitch.dll",
           "build\src\Release\single_pitch.dll"
         )
-        
+
         foreach ($path in $possiblePaths) {
           if (Test-Path $path) {
-            Copy-Item $path "cpp\lib\single_pitch.dll"
+            Copy-Item $path "cpp\lib\single_pitch.dll" -Force
             Write-Host "DLL copied from: $path"
             $dllFound = $true
             break
           }
         }
-        
-        if (!$dllFound) {
-          Write-Host "ERROR: Could not find single_pitch.dll in expected locations"
-          Write-Host "Searching entire build directory for DLL files:"
-          Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object { 
+
+        if (-not $dllFound) {
+          Write-Host "WARNING: Could not find single_pitch.dll in expected locations, listing all DLLs in build:"
+          Get-ChildItem -Path "build" -Recurse -Filter "*.dll" | ForEach-Object {
             Write-Host "  $($_.FullName)"
           }
+          Write-Host "Failing the step so the workflow stops (no DLL to upload)."
           exit 1
         }
       shell: powershell
-      
+
     - name: Copy fftw3.dll next to single_pitch.dll
       run: |
         $src = Join-Path $env:VCPKG_ROOT "installed\x64-windows\bin\fftw3.dll"
@@ -193,10 +194,10 @@ jobs:
         }
       shell: powershell
 
-    - name: Upload Windows DLL artifact
+    - name: Upload Windows DLL artifact (includes FFTW dependency)
       uses: actions/upload-artifact@v4
       with:
         name: fastF0Nls-windows-dll
-        path: cpp/lib/single_pitch.dll
+        path: cpp/lib
         retention-days: 30
         if-no-files-found: error
