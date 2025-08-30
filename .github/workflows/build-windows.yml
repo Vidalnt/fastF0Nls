@@ -115,6 +115,19 @@ jobs:
         }
       shell: powershell
       
+    - name: Copy fftw3.dll next to single_pitch.dll
+      run: |
+        $src = Join-Path $env:VCPKG_ROOT "installed\x64-windows\bin\fftw3.dll"
+        if (Test-Path $src) {
+          Copy-Item $src -Destination "cpp\lib\fftw3.dll" -Force
+          Write-Host "Copied fftw3.dll to cpp\lib"
+        } else {
+          Write-Host "fftw3.dll not found at $src"
+          Get-ChildItem "$env:VCPKG_ROOT" -Recurse -Filter "fftw3*.dll" | ForEach-Object { Write-Host $_.FullName }
+          exit 1
+        }
+      shell: powershell
+
     - name: Verify final DLL (safe dumpbin lookup)
       run: |
         if (Test-Path "cpp\lib\single_pitch.dll") {
