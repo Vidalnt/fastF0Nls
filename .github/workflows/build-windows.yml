@@ -32,19 +32,18 @@ jobs:
         
         # Agregar includes y definiciones necesarias al inicio
         $patchHeader = @"
-#ifdef _MSC_VER
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-#define or ||
-#define and &&
-#include <cmath>
-#include <algorithm>
-using std::min;
-using std::max;
-#endif
-
-"@
+        #ifdef _MSC_VER
+        #ifndef M_PI
+        #define M_PI 3.14159265358979323846
+        #endif
+        #define or ||
+        #define and &&
+        #include <cmath>
+        #include <algorithm>
+        using std::min;
+        using std::max;
+        #endif
+        "@
         
         # Aplicar el parche
         $patchedContent = $patchHeader + $content
